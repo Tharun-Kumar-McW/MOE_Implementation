@@ -16,22 +16,42 @@ from std.algorithm import parallelize
 
 
 def matmul(
-    output: ManagedTensorSlice[mut = True, ...],
-    lhs: ManagedTensorSlice[dtype = output.dtype, rank = 2, ...],
-    rhs: ManagedTensorSlice[dtype = output.dtype, rank = 2, ...]
-)raises:
+    output: OutputTensor[rank=2, ...],
+    lhs: InputTensor[dtype=output.dtype, rank=2, ...],
+    rhs: InputTensor[dtype=output.dtype, rank=2, ...]
+) raises:
+    comptime TILE = 16
+
     var m = lhs.dim_size(0)
     var k = lhs.dim_size(1)
     var n = rhs.dim_size(1)
 
-    for i in range(m):
-        for j in range(n):
-            var acc = Scalar[output.dtype](0.0)
-            for p in range(k):
-                var left_val = lhs.load[1](IndexList[2](i,p))
-                var right_val = rhs.load[1](IndexList[2](p,j))
-                acc += left_val * right_val
-            output.store[1](IndexList[2](i,j), acc)
+    for i0 in range(0, m, TILE):
+        var i_end  = min(i0 + TILE, m)
+        var i_tile = i_end - i0
+
+        for j0 in range(0, n, TILE):
+            var j_end  = min(j0 + TILE, n)
+            var j_tile = j_end - j0
+            var acc = List[Scalar[output.dtype]](
+                length = i_tile * j_tile,
+                fill   = Scalar[output.dtype](0)
+            )
+
+            for p0 in range(0, k, TILE):
+                var p_end = min(p0 + TILE, k)
+
+                for i in range(i0, i_end):
+                    var i_local = i - i0
+                    for p in range(p0, p_end):
+                        var left_val = lhs.load[1](IndexList[2](i, p))
+
+                        for j in range(j0, j_end):
+                            acc[i_local * j_tile + (j - j0)] += left_val * rhs.load[1](IndexList[2](p, j))
+
+            for i in range(i0, i_end):
+                for j in range(j0, j_end):
+                    output.store[1](IndexList[2](i, j), acc[(i - i0) * j_tile + (j - j0)])
 
 def top_k[k: Int, dtype: DType](
     output1: ManagedTensorSlice[mut=True, dtype=dtype, rank=2, ...],
@@ -82,6 +102,23 @@ def mask_experts[dtype: DType](
             var expert = Int(A.load[1](IndexList[2](i, j)))
             output.store[1](IndexList[2](expert, i), True)
 
+def expert_ffn_compute(
+    output: ManagedTensorSlice[mut=True, dtype=DType.float32, rank=3, ...],
+    A: ManagedTensorSlice[dtype=DType.bool,rank=2, ...],
+    B: ManagedTensorSlice[dtype=DType.float32,rank=2, ...]
+) raises :
+    var r = A.dim_size(0)
+    var c = A.dim_size(1)
+    var emb_dim = B.dim_size(1)
+
+    for i in range(r):
+        for j in range(c):
+            var flag = A.load[1](IndexList[2](i, j))
+            if flag:
+                for k in range(emb_dim):
+                    var temp = B.load[1](IndexList[2](j, k))
+                    output.store[1](IndexList[3](i, j, k), temp)
+
 
 def silu[dtype: DType](
     output: ManagedTensorSlice[mut=True, dtype=dtype, rank=2, ...],
@@ -99,3 +136,53 @@ def silu[dtype: DType](
             var res = val / fact.cast[dtype]()
 
             output.store[1](IndexList[2](i,j), res)
+
+def element_matmul(
+    output: ManagedTensorSlice[mut=True, dtype=DType.float32, rank=2, ...],
+    A: ManagedTensorSlice[dtype=DType.float32, rank=2, ...],
+    B: ManagedTensorSlice[dtype=DType.float32, rank=2, ...],
+) raises:
+    var r = A.dim_size(0)
+    var c = A.dim_size(1)
+
+    for i in range(r):
+        for j in range(c):
+            var a = A.load[1](IndexList[2](i, j))
+            var b = B.load[1](IndexList[2](i, j))
+            output.store[1](IndexList[2](i, j), a * b)
+
+def expert_prob_add[expert_idx: Int](
+    output: ManagedTensorSlice[mut=True, dtype=DType.float32, rank=2, ...],
+    A: ManagedTensorSlice[dtype=DType.float32, rank=2, ...],
+    B: ManagedTensorSlice[dtype=DType.float32, rank=2, ...],
+    C: ManagedTensorSlice[dtype=DType.int8, rank=2, ...],
+) raises:
+    
+    var r = A.dim_size(0)
+    var c = A.dim_size(1)
+    var k = B.dim_size(1)
+
+    for i in range(r):
+        var is_zero = True
+        for j in range(c):
+            var val = A.load[1](IndexList[2](i, j))
+            if val != 0:
+                is_zero = False
+                break
+        if is_zero:
+            continue
+        
+        var routing_weight: Float32 = 0.0
+
+        for j in range(k):
+            var idx = C.load[1](IndexList[2](i, j))
+
+            if Int(idx) == expert_idx:
+                routing_weight = B.load[1](IndexList[2](i, j))
+                break
+
+        for j in range(c):
+            var val = A.load[1](IndexList[2](i, j))
+            output.store[1](IndexList[2](i, j), val * routing_weight)
+
+

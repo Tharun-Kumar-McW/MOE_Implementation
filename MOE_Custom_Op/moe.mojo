@@ -14,7 +14,7 @@ from std.math import sqrt, exp
 from std.collections import List
 from std.algorithm import parallelize
 
-from .cpu.moe_cpu import matmul, top_k, mask_experts, silu
+from .cpu.moe_cpu import matmul, top_k, mask_experts, expert_ffn_compute, silu, element_matmul, expert_prob_add
 
 
 @compiler.register("matmul")
@@ -63,6 +63,21 @@ struct MaskOfExpert:
             A
         )
 
+@compiler.register("expert_ffn_matrix_compute")
+struct ExpertFFNMatrix:
+    @staticmethod
+    def execute[target: StaticString](
+        output: OutputTensor[dtype=DType.float32, rank=3, ...],
+        A: InputTensor[dtype=DType.bool, rank=2, ...],
+        B: InputTensor[dtype=DType.float32, rank=2, ...],
+    ) raises :
+        
+        expert_ffn_compute(
+            output,
+            A,
+            B
+        )
+
 @compiler.register("Silu")
 struct SILU:
     @staticmethod
@@ -77,4 +92,47 @@ struct SILU:
             A
         )
         
+@compiler.register("elementwise_mul")
+struct ElementWiseMatmul:
+    @staticmethod
+    def execute[target: StaticString](
+        output: OutputTensor[dtype=DType.float32, rank=2, ...],
+        A: InputTensor[dtype=DType.float32, rank=2, ...],
+        B: InputTensor[dtype=DType.float32, rank=2, ...],
+    ) raises:
+
+        element_matmul(
+            output,
+            A,
+            B
+        )
+
+@compiler.register("apply_expert_prob")
+struct ExpertProbAdd:
+    @staticmethod
+    def execute[target: StaticString, expert_idx: Int](
+        output: OutputTensor[dtype=DType.float32, rank=2, ...],
+        A: InputTensor[dtype=DType.float32, rank=2, ...],
+        B: InputTensor[dtype=DType.float32, rank=2, ...],
+        C: InputTensor[dtype=DType.int8, rank=2, ...],
+    ) raises :
         
+        expert_prob_add[
+            expert_idx
+        ](
+            output,
+            A,
+            B,
+            C
+        )
+
+@compiler.register("initialize_moe_output")
+struct InitializeMoeOutput:
+    @staticmethod
+    def execute[target: StaticString](
+        output: OutputTensor[dtype=DType.float32, rank=2, ...],
+        A: InputTensor[dtype=DType.float32, rank=2, ...],
+        ctx: DeviceContextPtr,
+    ) raises:
+    
+        pass
