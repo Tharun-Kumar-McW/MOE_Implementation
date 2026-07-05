@@ -127,15 +127,33 @@ def silu[dtype: DType](
     var r = A.dim_size(0)
     var c = A.dim_size(1)
 
+    comptime WIDTH = simd_width_of[dtype]()
+
     for i in range(r):
-        for j in range(c):
-            var val = A.load[1](IndexList[2](i,j))
+        var j = 0
+
+        while j + WIDTH <= c:
+            var vals = A.load[WIDTH](IndexList[2](i, j))
+
+            var e = vals.cast[DType.float32]()
+            var fact = 1.0 + exp(-e)
+
+            var res = vals / fact.cast[dtype]()
+
+            output.store[WIDTH](IndexList[2](i, j), res)
+
+            j += WIDTH
+            
+        while j < c:
+            var val = A.load[1](IndexList[2](i, j))
+
             var e = val.cast[DType.float32]()
             var fact = 1.0 + exp(-e)
 
             var res = val / fact.cast[dtype]()
 
-            output.store[1](IndexList[2](i,j), res)
+            output.store[1](IndexList[2](i, j), res)
+            j += 1
 
 def element_matmul(
     output: ManagedTensorSlice[mut=True, dtype=DType.float32, rank=2, ...],
@@ -145,11 +163,28 @@ def element_matmul(
     var r = A.dim_size(0)
     var c = A.dim_size(1)
 
+    comptime WIDTH = simd_width_of[DType.float32]()
+
     for i in range(r):
-        for j in range(c):
+        var j = 0
+
+        while j + WIDTH <= c:
+            var a = A.load[WIDTH](IndexList[2](i, j))
+            var b = B.load[WIDTH](IndexList[2](i, j))
+
+            var res = a * b
+
+            output.store[WIDTH](IndexList[2](i, j), res)
+
+            j += WIDTH
+
+        while j < c:
             var a = A.load[1](IndexList[2](i, j))
             var b = B.load[1](IndexList[2](i, j))
+
             output.store[1](IndexList[2](i, j), a * b)
+
+            j += 1
 
 def expert_prob_add[expert_idx: Int](
     output: ManagedTensorSlice[mut=True, dtype=DType.float32, rank=2, ...],
@@ -185,4 +220,52 @@ def expert_prob_add[expert_idx: Int](
             var val = A.load[1](IndexList[2](i, j))
             output.store[1](IndexList[2](i, j), val * routing_weight)
 
+def grouped_matmul[dtype: DType](
+    output: OutputTensor[dtype=dtype, rank=2, ...],
+    X:      InputTensor[dtype=dtype,  rank=2, ...],
+    gate:   InputTensor[dtype=dtype,  rank=2, ...],
+    up:     InputTensor[dtype=dtype,  rank=2, ...]
+) raises:
+    comptime TILE = 16
 
+    var m = X.dim_size(0)
+    var k = X.dim_size(1)
+    var n = gate.dim_size(1)
+
+    for i0 in range(0, m, TILE):
+        var i_end  = min(i0 + TILE, m)
+        var i_tile = i_end - i0
+
+        for j0 in range(0, n, TILE):
+            var j_end  = min(j0 + TILE, n)
+            var j_tile = j_end - j0
+
+            var acc_gate = List[Scalar[dtype]](
+                length = i_tile * j_tile,
+                fill   = Scalar[dtype](0)
+            )
+            var acc_up = List[Scalar[dtype]](
+                length = i_tile * j_tile,
+                fill   = Scalar[dtype](0)
+            )
+
+            for p0 in range(0, k, TILE):
+                var p_end = min(p0 + TILE, k)
+
+                for i in range(i0, i_end):
+                    var i_local = i - i0
+
+                    for p in range(p0, p_end):
+                        var x_val = X[i, p]
+
+                        for j in range(j0, j_end):
+                            var idx = i_local * j_tile + (j - j0)
+                            acc_gate[idx] += x_val * gate[p, j]
+                            acc_up[idx]   += x_val * up[p, j]
+            for i in range(i0, i_end):
+                for j in range(j0, j_end):
+                    var idx = (i - i0) * j_tile + (j - j0)
+                    output[i, j]     = acc_gate[idx]
+                    output[i, j + n] = acc_up[idx]
+
+ 
