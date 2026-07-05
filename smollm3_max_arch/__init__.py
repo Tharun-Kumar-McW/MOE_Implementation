@@ -1,0 +1,11 @@
+# ===----------------------------------------------------------------------=== #
+# Copyright (c) 2026, Modular Inc. All rights reserved.
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions:
+# https://llvm.org/LICENSE.txt
+# ===----------------------------------------------------------------------=== #
+
+"""SmolLM3 layers."""
+from .arch import smollm3_arch
+
+ARCHITECTURES = [smollm3_arch]

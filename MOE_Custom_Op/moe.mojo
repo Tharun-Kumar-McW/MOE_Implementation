@@ -14,7 +14,7 @@ from std.math import sqrt, exp
 from std.collections import List
 from std.algorithm import parallelize
 
-from .cpu.moe_cpu import matmul, top_k, mask_experts, expert_ffn_compute, silu, element_matmul, expert_prob_add
+from .cpu.moe_cpu import matmul, top_k, mask_experts, expert_ffn_compute, silu, element_matmul, expert_prob_add, grouped_matmul
 
 
 @compiler.register("matmul")
@@ -120,6 +120,24 @@ struct ExpertProbAdd:
         expert_prob_add[
             expert_idx
         ](
+            output,
+            A,
+            B,
+            C
+        )
+
+@compiler.register("grouped_matmul")
+struct GroupedMatmul:
+    @staticmethod
+    def execute[target: StaticString](
+        output: OutputTensor[dtype=DType.float32, rank=2, ...],
+        A: InputTensor[dtype=output.dtype, rank=2, ...],
+        B: InputTensor[dtype=output.dtype, rank=2, ...],
+        C: InputTensor[dtype=output.dtype, rank=2, ...],
+        ctx: DeviceContextPtr,
+    ) raises:
+        
+        grouped_matmul(
             output,
             A,
             B,
